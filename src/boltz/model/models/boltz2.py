@@ -23,6 +23,9 @@ from boltz.model.modules.affinity import AffinityModule
 from boltz.model.modules.confidencev2 import ConfidenceModule
 from boltz.model.modules.diffusion_conditioning import DiffusionConditioning
 from boltz.model.modules.diffusionv2 import AtomDiffusion
+from boltz.model.modules.diffusionv2_deterministic import (
+    AtomDiffusion as AtomDiffusionDeterministic,
+)
 from boltz.model.modules.encodersv2 import RelativePositionEncoder
 from boltz.model.modules.trunkv2 import (
     BFactorModule,
@@ -272,17 +275,37 @@ class Boltz2(LightningModule):
         )
 
         # Output modules
-        self.structure_module = AtomDiffusion(
-            score_model_args={
-                "token_s": token_s,
-                "atom_s": atom_s,
-                "atoms_per_window_queries": atoms_per_window_queries,
-                "atoms_per_window_keys": atoms_per_window_keys,
-                **score_model_args,
-            },
-            compile_score=compile_structure,
-            **diffusion_process_args,
-        )
+        if "mode" in self.predict_args and self.predict_args["mode"] == "deterministic":
+            self.structure_module = AtomDiffusionDeterministic(
+                score_model_args={
+                    "token_s": token_s,
+                    "atom_s": atom_s,
+                    "atoms_per_window_queries": atoms_per_window_queries,
+                    "atoms_per_window_keys": atoms_per_window_keys,
+                    **score_model_args,
+                },
+                compile_score=compile_structure,
+                **diffusion_process_args,
+            )
+            print(
+                f"CP1 - Atom diffusion model initialised as deterministic model {type(self.structure_module)}"
+            )
+        else:
+            self.structure_module = AtomDiffusion(
+                score_model_args={
+                    "token_s": token_s,
+                    "atom_s": atom_s,
+                    "atoms_per_window_queries": atoms_per_window_queries,
+                    "atoms_per_window_keys": atoms_per_window_keys,
+                    **score_model_args,
+                },
+                compile_score=compile_structure,
+                **diffusion_process_args,
+            )
+            print(
+                f"CP2 - Atom diffusion model initialised as stochastic model {type(self.structure_module)}"
+            )
+
         self.distogram_module = DistogramModule(
             token_z,
             num_bins,

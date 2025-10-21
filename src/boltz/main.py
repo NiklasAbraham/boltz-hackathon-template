@@ -1039,6 +1039,12 @@ def cli() -> None:
     is_flag=True,
     help=" to dump the s and z embeddings into a npz file. Default is False.",
 )
+@click.option(
+    "--predict_mode",
+    type=click.Choice(["stochastic", "deterministic"]),
+    help="The mode to use for prediction. Default is stochastic.",
+    default="stochastic",
+)
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
@@ -1056,6 +1062,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     step_scale: Optional[float] = None,
     write_full_pae: bool = False,
     write_full_pde: bool = False,
+    predict_mode: Optional[Literal["stochastic", "deterministic"]] = None,
     output_format: Literal["pdb", "mmcif"] = "mmcif",
     num_workers: int = 2,
     override: bool = False,
@@ -1119,7 +1126,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             msa_server_password = os.environ.get("BOLTZ_MSA_PASSWORD")
         if api_key_value is None:
             api_key_value = os.environ.get("MSA_API_KEY_VALUE")
-        
+
         click.echo(f"MSA server enabled: {msa_server_url}")
         if api_key_value:
             click.echo("MSA server authentication: using API key header")
@@ -1304,6 +1311,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             "write_confidence_summary": True,
             "write_full_pae": write_full_pae,
             "write_full_pde": write_full_pde,
+            "mode": predict_mode,
         }
 
         steering_args = BoltzSteeringParams()
@@ -1387,7 +1395,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         steering_args.fk_steering = False
         steering_args.physical_guidance_update = False
         steering_args.contact_guidance_update = False
-        
+
         model_module = Boltz2.load_from_checkpoint(
             affinity_checkpoint,
             strict=True,

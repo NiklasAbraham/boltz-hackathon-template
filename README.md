@@ -1,30 +1,26 @@
 # Boltz Flow Matching: Analytical Conversion from Score-Based Diffusion
 
-This repository implements **analytical conversion** from score-based diffusion to flow matching for the Boltz-2 protein structure prediction model. This approach provides **3-5x faster sampling** with **85-95% quality retention** without requiring any retraining.
+This repository implements analytical conversion from score-based diffusion to flow matching for the Boltz-2 protein structure prediction model. This approach enables faster sampling without requiring any retraining.
 
-## 🚀 Key Benefits
+## Key Benefits
 
-- **⚡ 3-5x Faster Sampling**: 20 ODE steps vs 200 SDE steps
-- **🎯 No Retraining Required**: Works with existing pretrained checkpoints
-- **🔧 Same Architecture**: Uses identical DiffusionModule as original
-- **📈 High Quality**: 85-95% quality of fine-tuned flow matching models
-- **🧮 Mathematical Conversion**: Pure analytical transformation
+1. No retraining required, works with existing pretrained checkpoints
+2. Same architecture, uses the existing diffusion module
+3. Pure analytical transformation from score to velocity
 
 ## 📖 The Core Idea
 
 ### Score-Based Diffusion vs Flow Matching
 
-**Score-Based Diffusion (Original Boltz-2):**
-- Uses **Stochastic Differential Equations (SDEs)**
-- Requires **200+ sampling steps** for high quality
-- Each step involves random noise injection
-- Slower due to stochastic nature
+Score-Based Diffusion Original Boltz-2
+1. Uses stochastic differential equations SDEs
+2. Each step involves random noise injection
+3. Slower due to stochastic nature
 
-**Flow Matching (This Implementation):**
-- Uses **Ordinary Differential Equations (ODEs)**
-- Requires only **20 sampling steps** for comparable quality
-- Deterministic integration (no random noise)
-- Faster due to deterministic nature
+Flow Matching This Implementation
+1. Uses ordinary differential equations ODEs
+2. Deterministic integration no random noise
+3. Faster due to deterministic nature
 
 ### The Analytical Conversion
 
@@ -42,14 +38,14 @@ Where:
 - `σ`: Noise level
 - `v`: Velocity field for flow matching
 
-### Why It's Faster
+### Why It Is Faster
 
-1. **Fewer Steps**: 20 ODE steps vs 200 SDE steps = **10x fewer evaluations**
-2. **Deterministic**: No random noise generation = **faster computation**
-3. **Better Integration**: Heun's method (RK2) vs simple Euler = **more efficient**
-4. **Same Model**: No architectural changes = **no overhead**
+1. Fewer steps required for integration
+2. Deterministic integration avoids random noise generation
+3. Heun integration RK2 improves efficiency over simple Euler
+4. No architectural changes reduce overhead
 
-## 🔬 Technical Implementation
+## Technical Implementation
 
 ### Architecture Compatibility
 
@@ -104,7 +100,19 @@ v2 = velocity_network_forward(x_euler, t_next)
 x_new = x + 0.5 * dt * (v1 + v2)
 ```
 
-## 🏃‍♂️ Usage
+## Setup and Usage
+
+### Environment setup with conda
+
+```bash
+conda env create -f environment.yml
+conda activate boltz
+
+# optional editable install for src package
+pip install -e .
+```
+
+### Quick start
 
 ### Quick Start
 
@@ -113,13 +121,13 @@ x_new = x + 0.5 * dt * (v1 + v2)
 python run_boltz_flow_matching.py
 
 # This will:
-# 1. Load Boltz-2 checkpoint (~/.boltz/boltz2_conf.ckpt)
-# 2. Convert to flow matching format
-# 3. Run predictions on hackathon data
-# 4. Generate results with timing analysis
+# 1 Load Boltz 2 checkpoint at ~/.boltz/boltz2_conf.ckpt
+# 2 Convert to flow matching format
+# 3 Run predictions on hackathon data
+# 4 Generate results
 ```
 
-### Custom Parameters
+### Custom parameters
 
 ```python
 from run_boltz_flow_matching import BoltzFlowMatchingRunner
@@ -134,7 +142,7 @@ runner = BoltzFlowMatchingRunner(
 results = runner.run_predictions(max_proteins=5)
 ```
 
-### Direct Model Usage
+### Direct model usage
 
 ```python
 from boltz.model.models.boltz2 import Boltz2
@@ -149,29 +157,17 @@ model = Boltz2.load_from_checkpoint(
 # when use_flow_matching=True in hyperparameters
 ```
 
-## 📊 Performance Comparison
+## Examples and scripts
 
-### Speed Benchmarks
+1. Main runner script run_boltz_flow_matching.py
+2. Hackathon prediction script hackathon/predict_hackathon.py and helper API in hackathon/hackathon_api.py
+3. Training entrypoint scripts/train/train.py with configs in scripts/train/configs
+4. MSA generation scripts/generate_local_msa.py
+5. Evaluation helpers under scripts/eval
 
-| Method | Steps | Time (s) | Speedup |
-|--------|-------|---------|---------|
-| Score-based SDE | 200 | 45.2 | 1.0x |
-| Flow Matching ODE | 20 | 12.1 | **3.7x** |
-| Flow Matching ODE | 10 | 8.3 | **5.4x** |
+## Implementation Details
 
-### Quality Metrics
-
-| Method | lDDT | TM-score | RMSD |
-|--------|------|----------|------|
-| Original Score-based | 0.85 | 0.78 | 2.1Å |
-| Flow Matching (20 steps) | 0.82 | 0.75 | 2.3Å |
-| Flow Matching (50 steps) | 0.84 | 0.77 | 2.2Å |
-
-*Quality retention: 85-95% with 3-5x speedup*
-
-## 🔧 Implementation Details
-
-### File Structure
+### File structure
 
 ```
 ├── run_boltz_flow_matching.py          # Main runner script
@@ -181,14 +177,14 @@ model = Boltz2.load_from_checkpoint(
     └── boltz2.py                       # Modified to support flow matching
 ```
 
-### Key Classes
+### Key classes
 
 1. **`BoltzFlowMatchingRunner`**: Main orchestrator
 2. **`FlowMatchingDiffusion`**: Flow matching module
 3. **`ScoreToVelocityConverter`**: Analytical conversion
 4. **`Boltz2`**: Modified model with flow matching support
 
-### Integration Points
+### Integration points
 
 The flow matching is integrated into Boltz-2 through:
 
@@ -214,9 +210,9 @@ The flow matching is integrated into Boltz-2 through:
    hparams['flow_conversion_method'] = 'noise_based'
    ```
 
-## 🧮 Mathematical Foundation
+## Mathematical Foundation
 
-### Score-Based Diffusion
+### Score based diffusion
 
 The score-based approach learns to predict the score function:
 
@@ -226,7 +222,7 @@ The score-based approach learns to predict the score function:
 
 Where `s_θ` is the neural network predicting the score.
 
-### Flow Matching
+### Flow matching
 
 Flow matching learns a velocity field:
 
@@ -236,7 +232,7 @@ dx/dt = v_θ(x, t)
 
 Where `v_θ` is the neural network predicting the velocity.
 
-### Analytical Conversion
+### Analytical conversion
 
 The key insight is that both parameterize the same noise:
 
@@ -247,35 +243,34 @@ Flow:  x_t = (1-t)·x_0 + t·ε  →  v = ε - x_0
 
 This allows us to convert score predictions to velocity predictions **analytically**.
 
-## 🎯 Why This Works
+## Why this works
 
 1. **Same Information**: Both models learn the same underlying data distribution
 2. **Mathematical Equivalence**: The conversion is exact under certain conditions
 3. **Architecture Preservation**: Same neural network weights work for both
 4. **Integration Efficiency**: ODE solvers are more efficient than SDE solvers
 
-## 🔮 Future Improvements
+## Future improvements
 
 1. **Fine-tuning**: Optional 20-50 epoch fine-tuning for perfect quality
 2. **Advanced ODE Solvers**: Dormand-Prince, adaptive step sizes
 3. **Steering Integration**: Physical guidance for flow matching
 4. **Multi-scale**: Different step counts for different protein sizes
 
-## 📚 References
+## References
 
 - [Flow Matching for Generative Modeling](https://arxiv.org/abs/2210.02747)
 - [Score-Based Diffusion Models](https://arxiv.org/abs/2011.13456)
 - [Boltz-2 Paper](https://arxiv.org/abs/2402.17670)
 
-## 🤝 Contributing
+## Contributing
 
-This implementation provides a solid foundation for flow matching in protein structure prediction. Contributions welcome for:
+This implementation provides a foundation for flow matching in protein structure prediction. Contributions welcome for
 
-- Advanced ODE solvers
-- Quality improvements
-- Performance optimizations
-- Additional conversion methods
+1. Advanced ODE solvers
+2. Quality improvements
+3. Additional conversion methods
 
 ---
 
-**The key insight**: We can get 3-5x speedup with 85-95% quality retention by analytically converting pretrained score models to flow matching, without any retraining required!
+The key insight is that pretrained score models can be analytically converted to flow matching without retraining.

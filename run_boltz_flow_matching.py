@@ -14,6 +14,7 @@ Usage:
 """
 
 import sys
+import os
 import torch
 import numpy as np
 import time
@@ -219,6 +220,17 @@ class BoltzFlowMatchingRunner:
         
         print(f"✓ Loaded checkpoint to CPU")
         
+        # Remove optimizer and scheduler states - not needed for inference and can cause issues
+        keys_to_remove = []
+        if 'optimizer_states' in checkpoint:
+            keys_to_remove.append('optimizer_states')
+        if 'lr_schedulers' in checkpoint:
+            keys_to_remove.append('lr_schedulers')
+        
+        for key in keys_to_remove:
+            del checkpoint[key]
+            print(f"✓ Removed '{key}' (not needed for inference)")
+        
         # Modify sampling steps in hyperparameters
         hparams = checkpoint['hyper_parameters']
         
@@ -250,11 +262,10 @@ class BoltzFlowMatchingRunner:
             print(f"✓ Modified hyperparameters:")
             print(f"  Sampling steps: {original_steps} → {self.flow_steps} (flow matching)")
         
-        # Mark checkpoint as flow matching
-        # Boltz2.__init__ will see use_flow_matching=True and automatically instantiate FlowMatchingDiffusion
-        checkpoint['flow_matching_module'] = True
+        # DO NOT add custom keys to checkpoint root - only modify hyper_parameters
+        # The use_flow_matching flag in hparams is enough to trigger flow matching
         
-        print(f"\n✓ Flow matching enabled in checkpoint")
+        print(f"\n✓ Flow matching enabled in checkpoint hyperparameters")
         print(f"  When loaded, Boltz2 will automatically use diffusionv3_flow_matching.FlowMatchingDiffusion")
         
         # Save modified checkpoint
@@ -314,16 +325,16 @@ class BoltzFlowMatchingRunner:
         
         checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         
-        # Check 1: Flow matching flag in checkpoint
-        is_flow_matching = checkpoint.get('flow_matching_module', False)
-        print(f"Checkpoint has flow_matching_module flag: {is_flow_matching}")
-        
-        # Check 2: Hyperparameters
+        # Check hyperparameters for flow matching flag
         hparams = checkpoint.get('hyper_parameters', {})
         use_flow_matching = hparams.get('use_flow_matching', False)
         print(f"Hyperparameters use_flow_matching: {use_flow_matching}")
         
-        # Check 3: Sampling steps
+        # Check conversion method
+        conversion_method = hparams.get('flow_conversion_method', 'unknown')
+        print(f"Flow conversion method: {conversion_method}")
+        
+        # Check sampling steps
         structure_args = hparams.get('structure_module_args', {})
         num_steps = structure_args.get('num_sampling_steps', None)
         print(f"Configured sampling steps: {num_steps}")
@@ -335,12 +346,8 @@ class BoltzFlowMatchingRunner:
                 f"This suggests score-based diffusion might be active!"
             )
         
-        # Check 4: Flow matching args present
-        has_flow_args = 'flow_matching_args' in checkpoint
-        print(f"Checkpoint has flow_matching_args: {has_flow_args}")
-        
         # Final verification
-        if not (is_flow_matching or use_flow_matching):
+        if not use_flow_matching:
             raise RuntimeError(
                 "VERIFICATION FAILED: Checkpoint does not have flow matching enabled! "
                 "Refusing to run to prevent using score-based diffusion."
@@ -476,10 +483,15 @@ class BoltzFlowMatchingRunner:
         # Run prediction
         start_time = time.time()
         
+        # Set environment variables to suppress verbose PyTorch Lightning warnings
+        env = os.environ.copy()
+        env['PYTHONWARNINGS'] = 'ignore::UserWarning'
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
+            env=env,
         )
         
         elapsed = time.time() - start_time
@@ -495,16 +507,46 @@ class BoltzFlowMatchingRunner:
             print(f"✓ SUCCESS! Generated {len(pdb_files)} structure(s)")
             return True, elapsed
         else:
-            print(f"✗ FAILED - No PDB files generated")
+            print(f"\n{'='*80}")
+            print(f"✗ PREDICTION FAILED")
+            print(f"{'='*80}")
+            
             if result.returncode != 0:
-                print(f"   Return code: {result.returncode}")
-            if "Missing MSA" in result.stdout or "Missing MSA" in result.stderr:
-                print(f"   Error: Missing MSA files (need --use_msa_server flag)")
-            if result.stdout and "Error" in result.stdout:
-                lines = result.stdout.split('\n')
-                error_lines = [line for line in lines if 'Error' in line or 'Failed' in line]
-                for line in error_lines[:5]:
-                    print(f"   {line}")
+                print(f"\nReturn code: {result.returncode}")
+            
+            # Extract and display relevant error information
+            print(f"\n--- STDERR OUTPUT ---")
+            if result.stderr:
+                # Filter out the long missing keys warning
+                stderr_lines = result.stderr.split('\n')
+                filtered_stderr = []
+                skip_next = False
+                for i, line in enumerate(stderr_lines):
+                    # Skip the verbose "Found keys that are in the model state dict" warning
+                    if "Found keys that are in the model state dict but not in the checkpoint" in line:
+                        skip_next = True
+                        continue
+                    if skip_next and (line.strip() == '' or i == len(stderr_lines) - 1):
+                        skip_next = False
+                        continue
+                    if not skip_next:
+                        filtered_stderr.append(line)
+                
+                # Print last 30 lines to show actual errors
+                relevant_stderr = '\n'.join(filtered_stderr[-30:])
+                print(relevant_stderr)
+            else:
+                print("(No stderr output)")
+            
+            print(f"\n--- STDOUT OUTPUT (last 30 lines) ---")
+            if result.stdout:
+                stdout_lines = result.stdout.split('\n')
+                print('\n'.join(stdout_lines[-30:]))
+            else:
+                print("(No stdout output)")
+            
+            print(f"\n{'='*80}\n")
+            
             return False, elapsed
     
     def run_predictions(self, max_proteins: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -639,40 +681,25 @@ class BoltzFlowMatchingRunner:
                 
                 # Load the checkpoint to check if it's flow matching
                 checkpoint = torch.load(self.flow_checkpoint, map_location=self.device, weights_only=False)
+                hparams = checkpoint.get('hyper_parameters', {})
                 
                 # Check if this is a flow matching checkpoint
-                if checkpoint.get('flow_matching_module', False):
+                if hparams.get('use_flow_matching', False):
                     print(f"✓ Loading flow matching model with FlowMatchingDiffusion...")
                     
-                    # Load the original model first
+                    # Load the model with flow matching enabled
                     model = Boltz2.load_from_checkpoint(
-                        self.original_checkpoint,
+                        self.flow_checkpoint,
                         map_location=self.device,
+                        strict=False,
                     )
-                    
-                    # Get flow matching args from checkpoint
-                    flow_args = checkpoint.get('flow_matching_args', {})
-                    score_model_args = flow_args.get('score_model_args', {})
-                    
-                    # Create FlowMatchingDiffusion module
-                    flow_diffusion = FlowMatchingDiffusion(
-                        score_model_args=score_model_args,
-                        num_sampling_steps=flow_args.get('num_sampling_steps', self.flow_steps),
-                        sigma_min=flow_args.get('sigma_min', self.sigma_min),
-                        sigma_max=flow_args.get('sigma_max', self.sigma_max),
-                        sigma_data=flow_args.get('sigma_data', self.sigma_data),
-                    )
-                    
-                    # Replace the diffusion module
-                    if hasattr(model, 'structure_module'):
-                        model.structure_module.atom_diffusion = flow_diffusion
-                        print(f"✓ Replaced atom_diffusion with FlowMatchingDiffusion")
                     
                 else:
                     # Load regular model
                     model = Boltz2.load_from_checkpoint(
                         self.flow_checkpoint,
                         map_location=self.device,
+                        strict=False,
                     )
                 
                 print(f"✓ Model loaded")

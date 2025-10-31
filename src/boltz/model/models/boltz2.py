@@ -7,6 +7,11 @@ import torch._dynamo
 from pytorch_lightning import Callback, LightningModule
 from torch import Tensor, nn
 from torchmetrics import MeanMetric
+import os
+import time
+from pathlib import Path
+from datetime import datetime
+
 
 import boltz.model.layers.initialize as init
 from boltz.data import const
@@ -421,6 +426,329 @@ class Boltz2(LightningModule):
                 x["label"] for x in self.val_group_mapper.values()
             }, msg
 
+    # def forward(
+    #     self,
+    #     feats: dict[str, Tensor],
+    #     recycling_steps: int = 0,
+    #     num_sampling_steps: Optional[int] = None,
+    #     multiplicity_diffusion_train: int = 1,
+    #     diffusion_samples: int = 1,
+    #     max_parallel_samples: Optional[int] = None,
+    #     run_confidence_sequentially: bool = False,
+    # ) -> dict[str, Tensor]:
+    #     with torch.set_grad_enabled(
+    #         self.training and self.structure_prediction_training
+    #     ):
+    #         s_inputs = self.input_embedder(feats)
+
+    #         # Initialize the sequence embeddings
+    #         s_init = self.s_init(s_inputs)
+
+    #         # Initialize pairwise embeddings
+    #         z_init = (
+    #             self.z_init_1(s_inputs)[:, :, None]
+    #             + self.z_init_2(s_inputs)[:, None, :]
+    #         )
+    #         relative_position_encoding = self.rel_pos(feats)
+    #         z_init = z_init + relative_position_encoding
+    #         z_init = z_init + self.token_bonds(feats["token_bonds"].float())
+    #         if self.bond_type_feature:
+    #             z_init = z_init + self.token_bonds_type(feats["type_bonds"].long())
+    #         z_init = z_init + self.contact_conditioning(feats)
+
+    #         # Perform rounds of the pairwise stack
+    #         s = torch.zeros_like(s_init)
+    #         z = torch.zeros_like(z_init)
+
+    #         # Compute pairwise mask
+    #         mask = feats["token_pad_mask"].float()
+    #         pair_mask = mask[:, :, None] * mask[:, None, :]
+    #         if self.run_trunk_and_structure:
+    #             for i in range(recycling_steps + 1):
+    #                 with torch.set_grad_enabled(
+    #                     self.training
+    #                     and self.structure_prediction_training
+    #                     and (i == recycling_steps)
+    #                 ):
+    #                     # Issue with unused parameters in autocast
+    #                     if (
+    #                         self.training
+    #                         and (i == recycling_steps)
+    #                         and torch.is_autocast_enabled()
+    #                     ):
+    #                         torch.clear_autocast_cache()
+
+    #                     # Apply recycling
+    #                     s = s_init + self.s_recycle(self.s_norm(s))
+    #                     z = z_init + self.z_recycle(self.z_norm(z))
+
+    #                     # Compute pairwise stack
+    #                     if self.use_templates:
+    #                         if self.is_template_compiled and not self.training:
+    #                             template_module = self.template_module._orig_mod  # noqa: SLF001
+    #                         else:
+    #                             template_module = self.template_module
+
+    #                         z = z + template_module(
+    #                             z, feats, pair_mask, use_kernels=self.use_kernels
+    #                         )
+
+    #                     if self.is_msa_compiled and not self.training:
+    #                         msa_module = self.msa_module._orig_mod  # noqa: SLF001
+    #                     else:
+    #                         msa_module = self.msa_module
+
+    #                     z = z + msa_module(
+    #                         z, s_inputs, feats, use_kernels=self.use_kernels
+    #                     )
+
+    #                     # Revert to uncompiled version for validation
+    #                     if self.is_pairformer_compiled and not self.training:
+    #                         pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+    #                     else:
+    #                         pairformer_module = self.pairformer_module
+
+    #                     s, z = pairformer_module(
+    #                         s,
+    #                         z,
+    #                         mask=mask,
+    #                         pair_mask=pair_mask,
+    #                         use_kernels=self.use_kernels,
+    #                     )
+
+    #         pdistogram = self.distogram_module(z)
+    #         dict_out = {
+    #             "pdistogram": pdistogram,
+    #             "s": s,
+    #             "z": z,
+    #         }
+
+    #         if (
+    #             self.run_trunk_and_structure
+    #             and ((not self.training) or self.confidence_prediction)
+    #             and (not self.skip_run_structure)
+    #         ):
+    #             if self.checkpoint_diffusion_conditioning and self.training:
+    #                 # TODO decide whether this should be with bf16 or not
+    #                 q, c, to_keys, atom_enc_bias, atom_dec_bias, token_trans_bias = (
+    #                     torch.utils.checkpoint.checkpoint(
+    #                         self.diffusion_conditioning,
+    #                         s,
+    #                         z,
+    #                         relative_position_encoding,
+    #                         feats,
+    #                     )
+    #                 )
+    #             else:
+    #                 q, c, to_keys, atom_enc_bias, atom_dec_bias, token_trans_bias = (
+    #                     self.diffusion_conditioning(
+    #                         s_trunk=s,
+    #                         z_trunk=z,
+    #                         relative_position_encoding=relative_position_encoding,
+    #                         feats=feats,
+    #                     )
+    #                 )
+    #             diffusion_conditioning = {
+    #                 "q": q,
+    #                 "c": c,
+    #                 "to_keys": to_keys,
+    #                 "atom_enc_bias": atom_enc_bias,
+    #                 "atom_dec_bias": atom_dec_bias,
+    #                 "token_trans_bias": token_trans_bias,
+    #             }
+
+    #             with torch.autocast("cuda", enabled=False):
+    #                 struct_out = self.structure_module.sample(
+    #                     s_trunk=s.float(),
+    #                     s_inputs=s_inputs.float(),
+    #                     feats=feats,
+    #                     num_sampling_steps=num_sampling_steps,
+    #                     atom_mask=feats["atom_pad_mask"].float(),
+    #                     multiplicity=diffusion_samples,
+    #                     max_parallel_samples=max_parallel_samples,
+    #                     steering_args=self.steering_args,
+    #                     diffusion_conditioning=diffusion_conditioning,
+    #                 )
+    #                 dict_out.update(struct_out)
+
+    #             if self.predict_bfactor:
+    #                 pbfactor = self.bfactor_module(s)
+    #                 dict_out["pbfactor"] = pbfactor
+
+    #         if self.training and self.confidence_prediction:
+    #             assert len(feats["coords"].shape) == 4
+    #             assert feats["coords"].shape[1] == 1, (
+    #                 "Only one conformation is supported for confidence"
+    #             )
+
+    #         # Compute structure module
+    #         if self.training and self.structure_prediction_training:
+    #             atom_coords = feats["coords"]
+    #             B, K, L = atom_coords.shape[0:3]
+    #             assert K in (
+    #                 multiplicity_diffusion_train,
+    #                 1,
+    #             )  # TODO make check somewhere else, expand to m % N == 0, m > N
+    #             atom_coords = atom_coords.reshape(B * K, L, 3)
+    #             atom_coords = atom_coords.repeat_interleave(
+    #                 multiplicity_diffusion_train // K, 0
+    #             )
+    #             feats["coords"] = atom_coords  # (multiplicity, L, 3)
+    #             assert len(feats["coords"].shape) == 3
+
+    #             with torch.autocast("cuda", enabled=False):
+    #                 struct_out = self.structure_module(
+    #                     s_trunk=s.float(),
+    #                     s_inputs=s_inputs.float(),
+    #                     feats=feats,
+    #                     multiplicity=multiplicity_diffusion_train,
+    #                     diffusion_conditioning=diffusion_conditioning,
+    #                 )
+    #                 dict_out.update(struct_out)
+
+    #         elif self.training:
+    #             feats["coords"] = feats["coords"].squeeze(1)
+    #             assert len(feats["coords"].shape) == 3
+
+    #     if self.confidence_prediction:
+    #         dict_out.update(
+    #             self.confidence_module(
+    #                 s_inputs=s_inputs.detach(),
+    #                 s=s.detach(),
+    #                 z=z.detach(),
+    #                 x_pred=(
+    #                     dict_out["sample_atom_coords"].detach()
+    #                     if not self.skip_run_structure
+    #                     else feats["coords"].repeat_interleave(diffusion_samples, 0)
+    #                 ),
+    #                 feats=feats,
+    #                 pred_distogram_logits=(
+    #                     dict_out["pdistogram"][
+    #                         :, :, :, 0
+    #                     ].detach()  # TODO only implemented for 1 distogram
+    #                 ),
+    #                 multiplicity=diffusion_samples,
+    #                 run_sequentially=run_confidence_sequentially,
+    #                 use_kernels=self.use_kernels,
+    #             )
+    #         )
+
+    #     if self.affinity_prediction:
+    #         pad_token_mask = feats["token_pad_mask"][0]
+    #         rec_mask = feats["mol_type"][0] == 0
+    #         rec_mask = rec_mask * pad_token_mask
+    #         lig_mask = feats["affinity_token_mask"][0].to(torch.bool)
+    #         lig_mask = lig_mask * pad_token_mask
+    #         cross_pair_mask = (
+    #             lig_mask[:, None] * rec_mask[None, :]
+    #             + rec_mask[:, None] * lig_mask[None, :]
+    #             + lig_mask[:, None] * lig_mask[None, :]
+    #         )
+    #         z_affinity = z * cross_pair_mask[None, :, :, None]
+
+    #         argsort = torch.argsort(dict_out["iptm"], descending=True)
+    #         best_idx = argsort[0].item()
+    #         coords_affinity = dict_out["sample_atom_coords"].detach()[best_idx][
+    #             None, None
+    #         ]
+    #         s_inputs = self.input_embedder(feats, affinity=True)
+
+    #         with torch.autocast("cuda", enabled=False):
+    #             if self.affinity_ensemble:
+    #                 dict_out_affinity1 = self.affinity_module1(
+    #                     s_inputs=s_inputs.detach(),
+    #                     z=z_affinity.detach(),
+    #                     x_pred=coords_affinity,
+    #                     feats=feats,
+    #                     multiplicity=1,
+    #                     use_kernels=self.use_kernels,
+    #                 )
+
+    #                 dict_out_affinity1["affinity_probability_binary"] = (
+    #                     torch.nn.functional.sigmoid(
+    #                         dict_out_affinity1["affinity_logits_binary"]
+    #                     )
+    #                 )
+    #                 dict_out_affinity2 = self.affinity_module2(
+    #                     s_inputs=s_inputs.detach(),
+    #                     z=z_affinity.detach(),
+    #                     x_pred=coords_affinity,
+    #                     feats=feats,
+    #                     multiplicity=1,
+    #                     use_kernels=self.use_kernels,
+    #                 )
+    #                 dict_out_affinity2["affinity_probability_binary"] = (
+    #                     torch.nn.functional.sigmoid(
+    #                         dict_out_affinity2["affinity_logits_binary"]
+    #                     )
+    #                 )
+
+    #                 dict_out_affinity_ensemble = {
+    #                     "affinity_pred_value": (
+    #                         dict_out_affinity1["affinity_pred_value"]
+    #                         + dict_out_affinity2["affinity_pred_value"]
+    #                     )
+    #                     / 2,
+    #                     "affinity_probability_binary": (
+    #                         dict_out_affinity1["affinity_probability_binary"]
+    #                         + dict_out_affinity2["affinity_probability_binary"]
+    #                     )
+    #                     / 2,
+    #                 }
+
+    #                 dict_out_affinity1 = {
+    #                     "affinity_pred_value1": dict_out_affinity1[
+    #                         "affinity_pred_value"
+    #                     ],
+    #                     "affinity_probability_binary1": dict_out_affinity1[
+    #                         "affinity_probability_binary"
+    #                     ],
+    #                 }
+    #                 dict_out_affinity2 = {
+    #                     "affinity_pred_value2": dict_out_affinity2[
+    #                         "affinity_pred_value"
+    #                     ],
+    #                     "affinity_probability_binary2": dict_out_affinity2[
+    #                         "affinity_probability_binary"
+    #                     ],
+    #                 }
+    #                 if self.affinity_mw_correction:
+    #                     model_coef = 1.03525938
+    #                     mw_coef = -0.59992683
+    #                     bias = 2.83288489
+    #                     mw = feats["affinity_mw"][0] ** 0.3
+    #                     dict_out_affinity_ensemble["affinity_pred_value"] = (
+    #                         model_coef
+    #                         * dict_out_affinity_ensemble["affinity_pred_value"]
+    #                         + mw_coef * mw
+    #                         + bias
+    #                     )
+
+    #                 dict_out.update(dict_out_affinity_ensemble)
+    #                 dict_out.update(dict_out_affinity1)
+    #                 dict_out.update(dict_out_affinity2)
+    #             else:
+    #                 dict_out_affinity = self.affinity_module(
+    #                     s_inputs=s_inputs.detach(),
+    #                     z=z_affinity.detach(),
+    #                     x_pred=coords_affinity,
+    #                     feats=feats,
+    #                     multiplicity=1,
+    #                     use_kernels=self.use_kernels,
+    #                 )
+    #                 dict_out.update(
+    #                     {
+    #                         "affinity_pred_value": dict_out_affinity[
+    #                             "affinity_pred_value"
+    #                         ],
+    #                         "affinity_probability_binary": torch.nn.functional.sigmoid(
+    #                             dict_out_affinity["affinity_logits_binary"]
+    #                         ),
+    #                     }
+    #                 )
+
+    #     return dict_out
+
     def forward(
         self,
         feats: dict[str, Tensor],
@@ -431,6 +759,10 @@ class Boltz2(LightningModule):
         max_parallel_samples: Optional[int] = None,
         run_confidence_sequentially: bool = False,
     ) -> dict[str, Tensor]:
+        # Profiling accumulators
+        msa_embed_time_s = 0.0
+        structure_sampling_time_s = 0.0
+
         with torch.set_grad_enabled(
             self.training and self.structure_prediction_training
         ):
@@ -477,7 +809,7 @@ class Boltz2(LightningModule):
                         s = s_init + self.s_recycle(self.s_norm(s))
                         z = z_init + self.z_recycle(self.z_norm(z))
 
-                        # Compute pairwise stack
+                        # Templates (not timed)
                         if self.use_templates:
                             if self.is_template_compiled and not self.training:
                                 template_module = self.template_module._orig_mod  # noqa: SLF001
@@ -488,16 +820,22 @@ class Boltz2(LightningModule):
                                 z, feats, pair_mask, use_kernels=self.use_kernels
                             )
 
+                        # ---- MSA embedding timing ----
                         if self.is_msa_compiled and not self.training:
                             msa_module = self.msa_module._orig_mod  # noqa: SLF001
                         else:
                             msa_module = self.msa_module
 
+                        self._cuda_sync()
+                        t0 = time.perf_counter()
                         z = z + msa_module(
                             z, s_inputs, feats, use_kernels=self.use_kernels
                         )
+                        self._cuda_sync()
+                        msa_embed_time_s += time.perf_counter() - t0
+                        # --------------------------------
 
-                        # Revert to uncompiled version for validation
+                        # Pairformer (not timed)
                         if self.is_pairformer_compiled and not self.training:
                             pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
                         else:
@@ -552,7 +890,10 @@ class Boltz2(LightningModule):
                     "token_trans_bias": token_trans_bias,
                 }
 
+                # ---- Diffusion sampling timing ----
                 with torch.autocast("cuda", enabled=False):
+                    self._cuda_sync()
+                    t0 = time.perf_counter()
                     struct_out = self.structure_module.sample(
                         s_trunk=s.float(),
                         s_inputs=s_inputs.float(),
@@ -564,7 +905,10 @@ class Boltz2(LightningModule):
                         steering_args=self.steering_args,
                         diffusion_conditioning=diffusion_conditioning,
                     )
+                    self._cuda_sync()
+                    structure_sampling_time_s += time.perf_counter() - t0
                     dict_out.update(struct_out)
+                # -----------------------------------
 
                 if self.predict_bfactor:
                     pbfactor = self.bfactor_module(s)
@@ -576,14 +920,14 @@ class Boltz2(LightningModule):
                     "Only one conformation is supported for confidence"
                 )
 
-            # Compute structure module
+            # Compute structure module (training path)
             if self.training and self.structure_prediction_training:
                 atom_coords = feats["coords"]
                 B, K, L = atom_coords.shape[0:3]
                 assert K in (
                     multiplicity_diffusion_train,
                     1,
-                )  # TODO make check somewhere else, expand to m % N == 0, m > N
+                )
                 atom_coords = atom_coords.reshape(B * K, L, 3)
                 atom_coords = atom_coords.repeat_interleave(
                     multiplicity_diffusion_train // K, 0
@@ -605,6 +949,7 @@ class Boltz2(LightningModule):
                 feats["coords"] = feats["coords"].squeeze(1)
                 assert len(feats["coords"].shape) == 3
 
+        # Confidence / affinity unchanged (omitted here for brevity) ----
         if self.confidence_prediction:
             dict_out.update(
                 self.confidence_module(
@@ -617,11 +962,7 @@ class Boltz2(LightningModule):
                         else feats["coords"].repeat_interleave(diffusion_samples, 0)
                     ),
                     feats=feats,
-                    pred_distogram_logits=(
-                        dict_out["pdistogram"][
-                            :, :, :, 0
-                        ].detach()  # TODO only implemented for 1 distogram
-                    ),
+                    pred_distogram_logits=(dict_out["pdistogram"][:, :, :, 0].detach()),
                     multiplicity=diffusion_samples,
                     run_sequentially=run_confidence_sequentially,
                     use_kernels=self.use_kernels,
@@ -629,6 +970,7 @@ class Boltz2(LightningModule):
             )
 
         if self.affinity_prediction:
+            # (unchanged — omitted for brevity)
             pad_token_mask = feats["token_pad_mask"][0]
             rec_mask = feats["mol_type"][0] == 0
             rec_mask = rec_mask * pad_token_mask
@@ -646,12 +988,12 @@ class Boltz2(LightningModule):
             coords_affinity = dict_out["sample_atom_coords"].detach()[best_idx][
                 None, None
             ]
-            s_inputs = self.input_embedder(feats, affinity=True)
+            s_inputs_aff = self.input_embedder(feats, affinity=True)
 
             with torch.autocast("cuda", enabled=False):
                 if self.affinity_ensemble:
                     dict_out_affinity1 = self.affinity_module1(
-                        s_inputs=s_inputs.detach(),
+                        s_inputs=s_inputs_aff.detach(),
                         z=z_affinity.detach(),
                         x_pred=coords_affinity,
                         feats=feats,
@@ -665,7 +1007,7 @@ class Boltz2(LightningModule):
                         )
                     )
                     dict_out_affinity2 = self.affinity_module2(
-                        s_inputs=s_inputs.detach(),
+                        s_inputs=s_inputs_aff.detach(),
                         z=z_affinity.detach(),
                         x_pred=coords_affinity,
                         feats=feats,
@@ -724,7 +1066,7 @@ class Boltz2(LightningModule):
                     dict_out.update(dict_out_affinity2)
                 else:
                     dict_out_affinity = self.affinity_module(
-                        s_inputs=s_inputs.detach(),
+                        s_inputs=s_inputs_aff.detach(),
                         z=z_affinity.detach(),
                         x_pred=coords_affinity,
                         feats=feats,
@@ -742,7 +1084,122 @@ class Boltz2(LightningModule):
                         }
                     )
 
+        # Attach profiling payload
+        dict_out["profiling"] = {
+            "msa_embedding_s": (
+                msa_embed_time_s if self.run_trunk_and_structure else float("nan")
+            ),
+            "structure_sampling_s": (
+                structure_sampling_time_s
+                if (not self.training and not self.skip_run_structure)
+                else float("nan")
+            ),
+        }
+
         return dict_out
+
+    # ---- Profiling helpers -------------------------------------------------
+    def _cuda_sync(self) -> None:
+        """Synchronize CUDA if available for accurate wall-clock timing."""
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def _resolve_output_dir(self, batch: dict[str, Tensor]) -> str:
+        """
+        Where to save the profiling TSV. Preference:
+        predict_args.output_dir -> predict_args.outdir -> batch.output_dir -> batch.outdir -> trainer.default_root_dir
+        """
+        cand = (
+            (self.predict_args.get("output_dir") if self.predict_args else None)
+            or (self.predict_args.get("outdir") if self.predict_args else None)
+            or (batch.get("output_dir") if isinstance(batch, dict) else None)
+            or (batch.get("outdir") if isinstance(batch, dict) else None)
+            or self.trainer.default_root_dir
+        )
+        return str(cand)
+
+    def _resolve_sample_id(self, batch: dict[str, Tensor]) -> str:
+        """
+        Derive a stable base name (used for both PDB and TSV).
+        Prefers batch['pdb_id'] if present; otherwise falls back to a timestamped step id.
+        """
+        if "pdb_id" in batch:
+            pid = batch["pdb_id"]
+            # Handle possible tensor/list/str shapes robustly
+            if torch.is_tensor(pid):
+                if pid.ndim == 0:
+                    return str(pid.item())
+                elif pid.ndim >= 1:
+                    v = pid[0]
+                    return str(
+                        v.item()
+                        if torch.is_floating_point(v)
+                        or v.dtype in (torch.int32, torch.int64)
+                        else v
+                    )
+            elif isinstance(pid, (list, tuple)):
+                return str(pid[0])
+            else:
+                return str(pid)
+        return f"sample_{self.global_step}"
+
+    def _write_profiling_tsv(
+        self,
+        outdir: str,
+        sample_id: str,
+        timings: dict[str, float],
+        extra: dict[str, str | int | float] | None = None,
+    ) -> str:
+        """
+        Write (or append) a single-line TSV with timing metrics.
+        Returns the full path to the TSV.
+        """
+        Path(outdir).mkdir(parents=True, exist_ok=True)
+        tsv_path = Path(outdir) / f"{sample_id}.tsv"
+
+        # Columns to record (extendable, fixed order)
+        columns = [
+            "sample_id",
+            "timestamp_iso",
+            "msa_generation_s",
+            "msa_embedding_s",
+            "diffusion_sampling_s",
+            "total_inference_s",
+            "recycling_steps",
+            "sampling_steps",
+            "diffusion_samples",
+            "mode",
+            "device",
+            "gpu_name",
+        ]
+
+        # Populate row values
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NA"
+        row = {
+            "sample_id": sample_id,
+            "timestamp_iso": now_iso,
+            "msa_generation_s": timings.get("msa_generation_s", float("nan")),
+            "msa_embedding_s": timings.get("msa_embedding_s", float("nan")),
+            "diffusion_sampling_s": timings.get("diffusion_sampling_s", float("nan")),
+            "total_inference_s": timings.get("total_inference_s", float("nan")),
+            "recycling_steps": extra.get("recycling_steps") if extra else None,
+            "sampling_steps": extra.get("sampling_steps") if extra else None,
+            "diffusion_samples": extra.get("diffusion_samples") if extra else None,
+            "mode": extra.get("mode") if extra else None,
+            "device": device_str,
+            "gpu_name": gpu_name,
+        }
+
+        # Write header if file is new; else append
+        write_header = not tsv_path.exists()
+        with open(tsv_path, "a", encoding="utf-8") as f:
+            if write_header:
+                f.write("\t".join(columns) + "\n")
+            f.write("\t".join(str(row.get(k, "")) for k in columns) + "\n")
+
+        return str(tsv_path)
 
     def get_true_coordinates(
         self,

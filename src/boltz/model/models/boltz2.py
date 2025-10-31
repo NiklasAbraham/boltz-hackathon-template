@@ -1534,8 +1534,87 @@ class Boltz2(LightningModule):
                 # This will aggregate, compute and log all metrics
                 validator.on_epoch_end(model=self)
 
+    # def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> dict:
+    #     try:
+    #         out = self(
+    #             batch,
+    #             recycling_steps=self.predict_args["recycling_steps"],
+    #             num_sampling_steps=self.predict_args["sampling_steps"],
+    #             diffusion_samples=self.predict_args["diffusion_samples"],
+    #             max_parallel_samples=self.predict_args["max_parallel_samples"],
+    #             run_confidence_sequentially=True,
+    #         )
+    #         pred_dict = {"exception": False}
+    #         if "keys_dict_batch" in self.predict_args:
+    #             for key in self.predict_args["keys_dict_batch"]:
+    #                 pred_dict[key] = batch[key]
+
+    #         pred_dict["masks"] = batch["atom_pad_mask"]
+    #         pred_dict["token_masks"] = batch["token_pad_mask"]
+    #         pred_dict["s"] = out["s"]
+    #         pred_dict["z"] = out["z"]
+
+    #         if "keys_dict_out" in self.predict_args:
+    #             for key in self.predict_args["keys_dict_out"]:
+    #                 pred_dict[key] = out[key]
+    #         pred_dict["coords"] = out["sample_atom_coords"]
+    #         if self.confidence_prediction:
+    #             # pred_dict["confidence"] = out.get("ablation_confidence", None)
+    #             pred_dict["pde"] = out["pde"]
+    #             pred_dict["plddt"] = out["plddt"]
+    #             pred_dict["confidence_score"] = (
+    #                 4 * out["complex_plddt"]
+    #                 + (
+    #                     out["iptm"]
+    #                     if not torch.allclose(
+    #                         out["iptm"], torch.zeros_like(out["iptm"])
+    #                     )
+    #                     else out["ptm"]
+    #                 )
+    #             ) / 5
+
+    #             pred_dict["complex_plddt"] = out["complex_plddt"]
+    #             pred_dict["complex_iplddt"] = out["complex_iplddt"]
+    #             pred_dict["complex_pde"] = out["complex_pde"]
+    #             pred_dict["complex_ipde"] = out["complex_ipde"]
+    #             if self.alpha_pae > 0:
+    #                 pred_dict["pae"] = out["pae"]
+    #                 pred_dict["ptm"] = out["ptm"]
+    #                 pred_dict["iptm"] = out["iptm"]
+    #                 pred_dict["ligand_iptm"] = out["ligand_iptm"]
+    #                 pred_dict["protein_iptm"] = out["protein_iptm"]
+    #                 pred_dict["pair_chains_iptm"] = out["pair_chains_iptm"]
+    #         if self.affinity_prediction:
+    #             pred_dict["affinity_pred_value"] = out["affinity_pred_value"]
+    #             pred_dict["affinity_probability_binary"] = out[
+    #                 "affinity_probability_binary"
+    #             ]
+    #             if self.affinity_ensemble:
+    #                 pred_dict["affinity_pred_value1"] = out["affinity_pred_value1"]
+    #                 pred_dict["affinity_probability_binary1"] = out[
+    #                     "affinity_probability_binary1"
+    #                 ]
+    #                 pred_dict["affinity_pred_value2"] = out["affinity_pred_value2"]
+    #                 pred_dict["affinity_probability_binary2"] = out[
+    #                     "affinity_probability_binary2"
+    #                 ]
+    #         return pred_dict
+
+    #     except RuntimeError as e:  # catch out of memory exceptions
+    #         if "out of memory" in str(e):
+    #             print("| WARNING: ran out of memory, skipping batch")
+    #             torch.cuda.empty_cache()
+    #             gc.collect()
+    #             return {"exception": True}
+    #         else:
+    #             raise e
+
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> dict:
         try:
+            # Total inference timing (model-side)
+            self._cuda_sync()
+            t_start = time.perf_counter()
+
             out = self(
                 batch,
                 recycling_steps=self.predict_args["recycling_steps"],
@@ -1544,7 +1623,62 @@ class Boltz2(LightningModule):
                 max_parallel_samples=self.predict_args["max_parallel_samples"],
                 run_confidence_sequentially=True,
             )
-            pred_dict = {"exception": False}
+
+            self._cuda_sync()
+            t_end = time.perf_counter()
+            total_inference_s = t_end - t_start
+
+            # Pull per-stage timings from forward()
+            prof = out.get("profiling", {}) if isinstance(out, dict) else {}
+            msa_embedding_s = prof.get("msa_embedding_s", float("nan"))
+            diffusion_sampling_s = prof.get("structure_sampling_s", float("nan"))
+
+            # Optional MSA *generation* time (if your datamodule computes it)
+            # If not provided, will be NaN in the TSV.
+            msa_generation_s = float("nan")
+            for key in (
+                "msa_generation_time_s",
+                "msa_gen_time_s",
+                "msa_time_s",
+                "mmseqs_time_s",
+            ):
+                if key in batch:
+                    v = batch[key]
+                    if torch.is_tensor(v):
+                        msa_generation_s = float(v.item())
+                    else:
+                        try:
+                            msa_generation_s = float(v)
+                        except Exception:
+                            pass
+                    break
+
+            timings = {
+                "msa_generation_s": msa_generation_s,
+                "msa_embedding_s": msa_embedding_s,
+                "diffusion_sampling_s": diffusion_sampling_s,
+                "total_inference_s": total_inference_s,
+            }
+
+            # Mode + hyper params for context
+            mode = (
+                "deterministic"
+                if isinstance(self.structure_module, AtomDiffusionDeterministic)
+                else "stochastic"
+            )
+            extras = {
+                "recycling_steps": self.predict_args.get("recycling_steps"),
+                "sampling_steps": self.predict_args.get("sampling_steps"),
+                "diffusion_samples": self.predict_args.get("diffusion_samples"),
+                "mode": mode,
+            }
+
+            # Save TSV next to where PDBs are typically written
+            outdir = self._resolve_output_dir(batch)
+            sample_id = self._resolve_sample_id(batch)
+            tsv_path = self._write_profiling_tsv(outdir, sample_id, timings, extras)
+
+            pred_dict = {"exception": False, "profiling_tsv": tsv_path}
             if "keys_dict_batch" in self.predict_args:
                 for key in self.predict_args["keys_dict_batch"]:
                     pred_dict[key] = batch[key]
@@ -1559,7 +1693,6 @@ class Boltz2(LightningModule):
                     pred_dict[key] = out[key]
             pred_dict["coords"] = out["sample_atom_coords"]
             if self.confidence_prediction:
-                # pred_dict["confidence"] = out.get("ablation_confidence", None)
                 pred_dict["pde"] = out["pde"]
                 pred_dict["plddt"] = out["plddt"]
                 pred_dict["confidence_score"] = (

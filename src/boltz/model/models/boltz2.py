@@ -295,6 +295,17 @@ class Boltz2(LightningModule):
             print(
                 f"CP1 - Atom diffusion model initialised as deterministic model {type(self.structure_module)}"
             )
+        elif "mode" in self.predict_args and self.predict_args["mode"] == "oneshot":
+            self.structure_module = Boltz2OneShot(
+                score_model_args={
+                    "token_s": token_s,
+                    "atom_s": atom_s,
+                    "atoms_per_window_queries": atoms_per_window_queries,
+                    "atoms_per_window_keys": atoms_per_window_keys,
+                    **score_model_args,
+                },
+                compile_score=compile_structure,
+            )
         else:
             self.structure_module = AtomDiffusion(
                 score_model_args={
@@ -1616,7 +1627,7 @@ class Boltz2(LightningModule):
             t_start = time.perf_counter()
 
             out = self(
-                batch,
+                feats=batch,
                 recycling_steps=self.predict_args["recycling_steps"],
                 num_sampling_steps=self.predict_args["sampling_steps"],
                 diffusion_samples=self.predict_args["diffusion_samples"],

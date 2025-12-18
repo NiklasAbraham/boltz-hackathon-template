@@ -51,6 +51,7 @@ BOLTZ2_AFFINITY_URL_WITH_FALLBACK = [
     "https://huggingface.co/boltz-community/boltz-2/resolve/main/boltz2_aff.ckpt",
 ]
 
+torch.set_float32_matmul_precision('medium')
 
 @dataclass
 class BoltzProcessedInput:
@@ -578,11 +579,11 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                 chain.msa_id = -1
 
         # Generate MSA
-        if to_generate and not use_msa_server:
+        if to_generate and not use_msa_server and not all([os.path.exists(c.msa_id) for c in target.record.chains if c.mol_type == prot_id]):
             msg = "Missing MSA's in input and --use_msa_server flag not set."
             raise RuntimeError(msg)  # noqa: TRY301
 
-        if to_generate:
+        if to_generate and not all([os.path.exists(c.msa_id) for c in target.record.chains if c.mol_type == prot_id]):
             msg = f"Generating MSA for {path} with {len(to_generate)} protein entities."
             click.echo(msg)
             compute_msa(
@@ -671,6 +672,7 @@ def process_inputs(
     msa_pairing_strategy: str,
     max_msa_seqs: int = 8192,
     use_msa_server: bool = False,
+    msa_dir: Path = None,
     msa_server_username: Optional[str] = None,
     msa_server_password: Optional[str] = None,
     api_key_header: Optional[str] = None,
@@ -741,11 +743,17 @@ def process_inputs(
             updated_manifest = Manifest(existing)
             updated_manifest.dump(out_dir / "processed" / "manifest.json")
 
+    print("CP0", msa_dir)
+
     # Create output directories
-    msa_dir = out_dir / "msa"
+    processed_msa_dir = out_dir / "processed" / "msa" if not msa_dir else msa_dir / "0_processed" / "msa"
+    msa_dir = out_dir / "msa" if not msa_dir else msa_dir
+
+    print("CP1", processed_msa_dir)
+    print("CP2", msa_dir)
+
     records_dir = out_dir / "processed" / "records"
     structure_dir = out_dir / "processed" / "structures"
-    processed_msa_dir = out_dir / "processed" / "msa"
     processed_constraints_dir = out_dir / "processed" / "constraints"
     processed_templates_dir = out_dir / "processed" / "templates"
     processed_mols_dir = out_dir / "processed" / "mols"
@@ -927,6 +935,12 @@ def cli() -> None:
     help="Whether to use the MMSeqs2 server for MSA generation. Default is False.",
 )
 @click.option(
+    "--msa_dir",
+    type=click.Path(exists=False),
+    help="Path to MSAs generated on a previous iteration.",
+    default=None,
+)
+@click.option(
     "--msa_server_url",
     type=str,
     help="MSA server url. Used only if --use_msa_server is set. ",
@@ -1068,6 +1082,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     override: bool = False,
     seed: Optional[int] = None,
     use_msa_server: bool = False,
+    msa_dir: str = None,
     msa_server_url: str = "https://api.colabfold.com",
     msa_pairing_strategy: str = "greedy",
     msa_server_username: Optional[str] = None,
@@ -1166,11 +1181,14 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     # Process inputs
     ccd_path = cache / "ccd.pkl"
     mol_dir = cache / "mols"
+    msa_dir = Path(msa_dir).expanduser() if msa_dir else msa_dir
+
     process_inputs(
         data=data,
         out_dir=out_dir,
         ccd_path=ccd_path,
         mol_dir=mol_dir,
+        msa_dir=msa_dir,
         use_msa_server=use_msa_server,
         msa_server_url=msa_server_url,
         msa_pairing_strategy=msa_pairing_strategy,
@@ -1195,10 +1213,11 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
     # Load processed data
     processed_dir = out_dir / "processed"
+    msa_dir = processed_dir / "msa" if not msa_dir else msa_dir / "0_processed" / "msa"
     processed = BoltzProcessedInput(
         manifest=filtered_manifest,
         targets_dir=processed_dir / "structures",
-        msa_dir=processed_dir / "msa",
+        msa_dir=msa_dir,
         constraints_dir=(
             (processed_dir / "constraints")
             if (processed_dir / "constraints").exists()
